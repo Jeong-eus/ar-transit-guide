@@ -1,0 +1,1947 @@
+        // 카메라 토글 (강화된 권한 요청)
+        async function toggleCamera() {
+            const video = document.getElementById('cameraFeed');
+            const btn = document.getElementById('cameraBtn');
+            const lang = document.getElementById('languageSelect').value;
+            const t = translations[lang];
+
+            if (!isCameraOn) {
+                try {
+                    // 카메라 상태 업데이트
+                    updateCameraStatus('requesting');
+                    
+                    // 먼저 권한 확인
+                    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+                        throw new Error('이 브라우저는 카메라를 지원하지 않습니다.');
+                    }
+
+                    console.log('카메라 권한 요청 중...');
+                    
+                    // 단계적 권한 요청
+                    let stream;
+                    try {
+                        // 1차: 후면 카메라 시도
+                        console.log('후면 카메라 시도...');
+                        stream = await navigator.mediaDevices.getUserMedia({ 
+                            video: { 
+                                facingMode: { exact: 'environment' },
+                                width: { ideal: 1280, min: 640 },
+                                height: { ideal: 720, min: 480 }
+                            },
+                            audio: false
+                        });
+                    } catch (backCamError) {
+                        console.log('후면 카메라 실패:', backCamError.message);
+                        try {
+                            // 2차: 후면 카메라 (exact 제거)
+                            console.log('후면 카메라 (일반) 시도...');
+                            stream = await navigator.mediaDevices.getUserMedia({ 
+                                video: { 
+                                    facingMode: 'environment',
+                                    width: { ideal: 1280, min: 480 },
+                                    height: { ideal: 720, min: 360 }
+                                },
+                                audio: false
+                            });
+                        } catch (env2Error) {
+                            console.log('후면 카메라 (일반) 실패:', env2Error.message);
+                            try {
+                                // 3차: 전면 카메라 시도
+                                console.log('전면 카메라 시도...');
+                                stream = await navigator.mediaDevices.getUserMedia({ 
+                                    video: { 
+                                        facingMode: 'user',
+                                        width: { ideal: 640, min: 320 },
+                                        height: { ideal: 480, min: 240 }
+                                    },
+                                    audio: false
+                                });
+                            } catch (frontCamError) {
+                                console.log('전면 카메라 실패:', frontCamError.message);
+                                // 4차: 기본 카메라 시도
+                                console.log('기본 카메라 시도...');
+                                stream = await navigator.mediaDevices.getUserMedia({ 
+                                    video: true,
+                                    audio: false
+                                });
+                            }
+                        }
+                    }
+
+                    if (stream) {
+                        cameraStream = stream;
+                        video.srcObject = stream;
+                        
+                        // 비디오 메타데이터 로드 대기
+                        video.addEventListener('loadedmetadata', () => {
+                            console.log('비디오 메타데이터 로드됨');
+                            video.play().then(() => {
+                                console.log('카메라 스트림 시작됨');
+                                btn.textContent = t.cameraOff;
+                                isCameraOn = true;
+                                updateCameraStatus('active');
+                                
+                                // AR 마커들 활성화
+                                activateARMarkers();
+                                
+                                // 성공 알림 (간단하게)
+                                setTimeout(() => {
+                                    showSuccess('📹 AR 카메라가 활성화되었습니다!');
+                                }, 500);
+                                
+                            }).catch(playError => {
+                                console.error('비디오 재생 오류:', playError);
+                                throw new Error('카메라 화면을 표시할 수 없습니다.');
+                            });
+                        });
+                        
+                        // 오류 핸들링
+                        video.addEventListener('error', (e) => {
+                            console.error('비디오 오류:', e);
+                            updateCameraStatus('error');
+                        });
+                    }
+                    
+                } catch (err) {
+                    console.error('카메라 접근 오류:', err);
+                    updateCameraStatus('error');
+                    
+                    let errorMessage = '';
+                    
+                    if (err.name === 'NotAllowedError') {
+                        errorMessage = '카메라 권한이 거부되었습니다.\n\n브라우저 설정에서 카메라 권한을 허용해주세요.';
+                    } else if (err.name === 'NotFoundError') {
+                        errorMessage = '카메라를 찾을 수 없습니다.\n\n다른 앱에서 카메라를 사용 중인지 확인해주세요.';
+                    } else if (err.name === 'NotSupportedError') {
+                        errorMessage = '이 브라우저는 카메라를 지원하지 않습니다.';
+                    } else if (err.name === 'NotReadableError') {
+                        errorMessage = '카메라에 접근할 수 없습니다.\n\n다른 앱을 종료하고 다시 시도해주세요.';
+                    } else {
+                        errorMessage = '카메라 오류가 발생했습니다.\n\n' + err.message;
+                    }
+                    
+                    // 권한 가이드 표시
+                    setTimeout(() => {
+                        showCameraPermissionGuide();
+                    }, 1000);
+                }
+            } else {
+                // 카메라 끄기
+                console.log('카메라 비활성화 시작...');
+                if (cameraStream) {
+                    cameraStream.getTracks().forEach(track => {
+                        track.stop();
+                        console.log('카메라 트랙 중지:', track.kind);
+                    });
+                    video.srcObject = null;
+                    cameraStream = null;
+                }
+                btn.textContent = t.cameraOn;
+                isCameraOn = false;
+                updateCameraStatus('off');
+                
+                // AR 마커들 비활성화
+                deactivateARMarkers();
+                
+                console.log('카메라 비활성화 완료');
+            }
+        }
+
+        // 성공 메시지 표시
+        function showSuccess(message) {
+            const successDiv = document.createElement('div');
+            successDiv.style.cssText = `
+                position: fixed;
+                top: 20px;
+                left: 50%;
+                transform: translateX(-50%);
+                background: #4CAF50;
+                color: white;
+                padding: 15px 25px;
+                border-radius: 25px;
+                font-size: 16px;
+                font-weight: 600;
+                z-index: 1000;
+                box-shadow: 0 4px 15px rgba(76, 175, 80, 0.3);
+                animation: slideDown 0.3s ease-out;
+            `;
+            successDiv.textContent = message;
+            
+            // 애니메이션 키프레임 추가
+            if (!document.getElementById('successAnimation')) {
+                const style = document.createElement('style');
+                style.id = 'successAnimation';
+                style.textContent = `
+                    @keyframes slideDown {
+                        from { transform: translateX(-50%) translateY(-100%); opacity: 0; }
+                        to { transform: translateX(-50%) translateY(0); opacity: 1; }
+                    }
+                `;
+                document.head.appendChild(style);
+            }
+            
+            document.body.appendChild(successDiv);
+            
+            setTimeout(() => {
+                successDiv.style.animation = 'slideDown 0.3s ease-out reverse';
+                setTimeout(() => successDiv.remove(), 300);
+            }, 3000);
+        }
+
+        // 카메라 권한 상태 확인 (개선됨)
+        async function checkCameraPermission() {
+            try {
+                if (navigator.permissions && navigator.permissions.query) {
+                    const permission = await navigator.permissions.query({ name: 'camera' });
+                    console.log('카메라 권한 상태:', permission.state);
+                    
+                    if (permission.state === 'denied') {
+                        showCameraPermissionGuide();
+                    } else if (permission.state === 'prompt') {
+                        // 권한 요청 다이얼로그 표시
+                        document.getElementById('permissionOverlay').style.display = 'flex';
+                    }
+                    
+                    permission.addEventListener('change', () => {
+                        console.log('카메라 권한 상태 변경:', permission.state);
+                        updateCameraStatus(permission.state === 'granted' ? 'off' : 'error');
+                    });
+                }
+            } catch (error) {
+                console.error('권한 확인 오류:', error);
+            }
+        }
+
+        // 카메라 권한 가이드 표시 (개선됨)
+        function showCameraPermissionGuide() {
+            const guide = document.createElement('div');
+            guide.style.cssText = `
+                position: fixed;
+                top: 0;
+                left: 0;
+                right: 0;
+                bottom: 0;
+                background: rgba(0,0,0,0.8);
+                display: flex;
+                justify-content: center;
+                align-items: center;
+                z-index: 1000;
+            `;
+            
+            const userAgent = navigator.userAgent;
+            const isChrome = userAgent.includes('Chrome');
+            const isSafari = userAgent.includes('Safari') && !userAgent.includes('Chrome');
+            const isFirefox = userAgent.includes('Firefox');
+            const isMobile = /Android|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(userAgent);
+            
+            let instructions = '';
+            if (isMobile) {
+                if (isChrome) {
+                    instructions = `
+                        <h3>📱 Chrome 모바일 설정</h3>
+                        <ol style="text-align: left; padding-left: 20px;">
+                            <li>주소창 왼쪽 <strong>🔒</strong> 또는 <strong>ⓘ</strong> 아이콘 터치</li>
+                            <li><strong>권한</strong> 또는 <strong>사이트 설정</strong> 선택</li>
+                            <li><strong>카메라</strong> → <strong>허용</strong> 선택</li>
+                            <li>페이지 새로고침</li>
+                        </ol>
+                    `;
+                } else if (isSafari) {
+                    instructions = `
+                        <h3>📱 Safari 모바일 설정</h3>
+                        <ol style="text-align: left; padding-left: 20px;">
+                            <li>주소창 왼쪽 <strong>AA</strong> 아이콘 터치</li>
+                            <li><strong>웹사이트 설정</strong> 선택</li>
+                            <li><strong>카메라</strong> → <strong>허용</strong> 선택</li>
+                            <li>페이지 새로고침</li>
+                        </ol>
+                    `;
+                } else {
+                    instructions = `
+                        <h3>📱 모바일 브라우저 설정</h3>
+                        <ol style="text-align: left; padding-left: 20px;">
+                            <li>브라우저 메뉴 → 설정</li>
+                            <li>사이트 권한 또는 개인정보 설정</li>
+                            <li>카메라 권한 허용</li>
+                            <li>페이지 새로고침</li>
+                        </ol>
+                    `;
+                }
+            } else {
+                instructions = `
+                    <h3>💻 데스크톱 브라우저 설정</h3>
+                    <ol style="text-align: left; padding-left: 20px;">
+                        <li>주소창 왼쪽 <strong>🔒</strong> 또는 <strong>🎥</strong> 아이콘 클릭</li>
+                        <li><strong>카메라</strong> → <strong>허용</strong> 선택</li>
+                        <li>페이지 새로고침</li>
+                    </ol>
+                `;
+            }
+            
+            guide.innerHTML = `
+                <div style="background: white; padding: 30px; border-radius: 15px; max-width: 400px; margin: 20px; text-align: center;">
+                    ${instructions}
+                    <div style="margin-top: 20px;">
+                        <button onclick="this.closest('div').parentElement.remove(); window.location.reload();" 
+                                style="background:#4CAF50; color:white; border:none; padding:12px 24px; border-radius:8px; cursor:pointer; margin:5px;">
+                            새로고침
+                        </button>
+                        <button onclick="this.closest('div').parentElement.remove()" 
+                                style="background:#666; color:white; border:none; padding:12px 24px; border-radius:8px; cursor:pointer; margin:5px;">
+                            닫기
+                        </button>
+                    </div>
+                    <p style="font-size: 12px; color: #666; margin-top: 15px;">
+                        💡 HTTPS 환경에서만 카메라가 작동합니다
+                    </p>
+                </div>
+            `;
+            
+            document.body.appendChild(guide);
+        }
+
+        // AR 마커 활성화 (개선됨)
+        function activateARMarkers() {
+            const markers = document.querySelectorAll('.marker');
+            markers.forEach((marker, index) => {
+                marker.style.animation = `bounce 1.5s infinite ${index * 0.3}s`;
+                marker.style.opacity = '1';
+                marker.style.boxShadow = '0 0 15px rgba(76, 175, 80, 0.8)';
+            });
+            
+            // 가상 AR 객체들 추가
+            addVirtualARObjects();
+            
+            console.log('AR 마커 활성화됨');
+        }
+
+        // AR 마커 비활성화 (개선됨)
+        function deactivateARMarkers() {
+            const markers = document.querySelectorAll('.marker');
+            markers.forEach(marker => {
+                marker.style.animation = 'none';
+                marker.style.opacity = '0.3';
+                marker.style.boxShadow = '0 0 5px rgba(76, 175, 80, 0.3)';
+            });
+            
+            // 가상 AR 객체들 제거
+            removeVirtualARObjects();
+            
+            console.log('AR 마커 비활성화됨');
+        }
+
+        // 가상 AR 객체 추가 (개선됨)
+        function addVirtualARObjects() {
+            const arOverlay = document.querySelector('.ar-overlay');
+            if (!arOverlay) return;
+            
+            // 방향 화살표 추가
+            if (!document.getElementById('arArrow')) {
+                const arrow = document.createElement('div');
+                arrow.id = 'arArrow';
+                arrow.style.cssText = `
+                    position: absolute;
+                    top: 25%;
+                    left: 50%;
+                    transform: translateX(-50%);
+                    font-size: 80px;
+                    color: #4CAF50;
+                    text-shadow: 3px 3px 6px rgba(0,0,0,0.7);
+                    animation: arPulse 2s infinite;
+                    z-index: 15;
+                    filter: drop-shadow(0 0 10px rgba(76, 175, 80, 0.8));
+                `;
+                arrow.textContent = '⬆️';
+                arOverlay.appendChild(arrow);
+            }
+            
+            // 거리 링 추가
+            if (!document.getElementById('distanceRing')) {
+                const distanceRing = document.createElement('div');
+                distanceRing.id = 'distanceRing';
+                distanceRing.style.cssText = `
+                    position: absolute;
+                    top: 55%;
+                    left: 50%;
+                    transform: translate(-50%, -50%);
+                    width: 120px;
+                    height: 120px;
+                    border: 4px solid #4CAF50;
+                    border-radius: 50%;
+                    border-top: 4px solid transparent;
+                    border-right: 4px solid rgba(76, 175, 80, 0.3);
+                    animation: ringRotate 2s linear infinite;
+                    opacity: 0.8;
+                    box-shadow: 0 0 20px rgba(76, 175, 80, 0.5);
+                `;
+                arOverlay.appendChild(distanceRing);
+            }
+            
+            // 목적지 표시 추가
+            if (!document.getElementById('arDestination')) {
+                const destination = document.createElement('div');
+                destination.id = 'arDestination';
+                destination.style.cssText = `
+                    position: absolute;
+                    top: 15%;
+                    right: 15px;
+                    background: rgba(255,255,255,0.95);
+                    padding: 12px;
+                    border-radius: 12px;
+                    font-size: 13px;
+                    font-weight: bold;
+                    color: #333;
+                    max-width: 130px;
+                    box-shadow: 0 4px 15px rgba(0,0,0,0.2);
+                    border: 2px solid #4CAF50;
+                `;
+                destination.textContent = '🎯 목적지 방향';
+                arOverlay.appendChild(destination);
+            }
+            
+            console.log('가상 AR 객체 추가됨');
+        }
+
+        // 가상 AR 객체 제거 (개선됨)
+        function removeVirtualARObjects() {
+            const elementsToRemove = ['arArrow', 'distanceRing', 'arDestination'];
+            elementsToRemove.forEach(id => {
+                const element = document.getElementById(id);
+                if (element) {
+                    element.remove();
+                    console.log(`AR 객체 제거됨: ${id}`);
+                }
+            });
+        }<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AR Transit Guide - 실시간 대중교통 AR 안내</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            color: #333;
+        }
+
+        .container {
+            max-width: 400px;
+            margin: 0 auto;
+            background: white;
+            min-height: 100vh;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .header {
+            background: linear-gradient(135deg, #4CAF50 0%, #45a049 100%);
+            color: white;
+            padding: 20px;
+            text-align: center;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+
+        .header h1 {
+            font-size: 24px;
+            margin-bottom: 5px;
+        }
+
+        .header p {
+            opacity: 0.9;
+            font-size: 14px;
+        }
+
+        .location-status {
+            background: rgba(255,255,255,0.1);
+            padding: 5px 10px;
+            border-radius: 10px;
+            font-size: 12px;
+            margin-top: 10px;
+        }
+
+        .language-selector {
+            position: absolute;
+            top: 20px;
+            right: 20px;
+            background: rgba(255,255,255,0.9);
+            border: 2px solid rgba(255,255,255,0.3);
+            color: #333;
+            padding: 8px 12px;
+            border-radius: 20px;
+            font-size: 13px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            backdrop-filter: blur(10px);
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+
+        .language-selector:hover {
+            background: rgba(255,255,255,1);
+            transform: translateY(-1px);
+            box-shadow: 0 4px 15px rgba(0,0,0,0.2);
+        }
+
+        .language-selector:focus {
+            outline: none;
+            border-color: #4CAF50;
+            box-shadow: 0 0 0 3px rgba(76, 175, 80, 0.2);
+        }
+
+        .language-selector option {
+            background: white;
+            color: #333;
+            padding: 8px;
+        }
+
+        .input-section {
+            padding: 20px;
+            background: white;
+        }
+
+        .input-group {
+            margin-bottom: 15px;
+            position: relative;
+        }
+
+        .input-group label {
+            display: block;
+            margin-bottom: 8px;
+            font-weight: 600;
+            color: #555;
+        }
+
+        .input-group input {
+            width: 100%;
+            padding: 12px 40px 12px 12px;
+            border: 2px solid #e0e0e0;
+            border-radius: 8px;
+            font-size: 16px;
+            transition: border-color 0.3s;
+        }
+
+        .input-group input:focus {
+            outline: none;
+            border-color: #4CAF50;
+        }
+
+        .location-btn {
+            position: absolute;
+            right: 8px;
+            top: 50%;
+            transform: translateY(-50%);
+            background: #4CAF50;
+            color: white;
+            border: none;
+            padding: 8px;
+            border-radius: 50%;
+            cursor: pointer;
+            font-size: 14px;
+            transition: all 0.3s;
+        }
+
+        .location-btn:hover {
+            background: #45a049;
+            transform: translateY(-50%) scale(1.1);
+        }
+
+        .search-btn {
+            width: 100%;
+            background: linear-gradient(135deg, #4CAF50 0%, #45a049 100%);
+            color: white;
+            border: none;
+            padding: 15px;
+            border-radius: 8px;
+            font-size: 18px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: transform 0.2s;
+            position: relative;
+        }
+
+        .search-btn:hover {
+            transform: translateY(-2px);
+        }
+
+        .search-btn:disabled {
+            background: #ccc;
+            cursor: not-allowed;
+            transform: none;
+        }
+
+        .loading {
+            display: none;
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+        }
+
+        .spinner {
+            width: 20px;
+            height: 20px;
+            border: 2px solid #ffffff33;
+            border-top: 2px solid white;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+
+        .ar-view {
+            height: 300px;
+            background: #000;
+            position: relative;
+            margin: 20px;
+            border-radius: 15px;
+            overflow: hidden;
+            display: none;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.3);
+        }
+
+        #cameraFeed {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+            border-radius: 15px;
+        }
+
+        .camera-btn {
+            position: absolute;
+            bottom: 10px;
+            right: 10px;
+            background: rgba(76, 175, 80, 0.9);
+            color: white;
+            border: none;
+            padding: 8px 12px;
+            border-radius: 20px;
+            font-size: 12px;
+            cursor: pointer;
+            backdrop-filter: blur(10px);
+        }
+
+        .ar-overlay {
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0,0,0,0.3);
+        }
+
+        .ar-direction {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            background: rgba(76, 175, 80, 0.9);
+            color: white;
+            padding: 15px 25px;
+            border-radius: 25px;
+            font-size: 18px;
+            font-weight: 600;
+            text-align: center;
+            animation: pulse 2s infinite;
+            backdrop-filter: blur(10px);
+        }
+
+        @keyframes pulse {
+            0% { transform: translate(-50%, -50%) scale(1); }
+            50% { transform: translate(-50%, -50%) scale(1.05); }
+            100% { transform: translate(-50%, -50%) scale(1); }
+        }
+
+        .ar-info {
+            position: absolute;
+            bottom: 20px;
+            left: 20px;
+            right: 20px;
+            background: rgba(255,255,255,0.95);
+            padding: 15px;
+            border-radius: 10px;
+            backdrop-filter: blur(10px);
+        }
+
+        .distance-indicator {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            background: rgba(255,255,255,0.9);
+            padding: 8px 12px;
+            border-radius: 15px;
+            font-size: 14px;
+            font-weight: 600;
+            color: #333;
+        }
+
+        .compass {
+            position: absolute;
+            top: 20px;
+            right: 20px;
+            width: 60px;
+            height: 60px;
+            background: rgba(255,255,255,0.9);
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 24px;
+            animation: rotate 4s linear infinite;
+        }
+
+        @keyframes rotate {
+            from { transform: rotate(0deg); }
+            to { transform: rotate(360deg); }
+        }
+
+        .route-info {
+            padding: 20px;
+            background: #f8f9fa;
+            margin: 20px;
+            border-radius: 15px;
+            display: none;
+        }
+
+        .route-step {
+            display: flex;
+            align-items: center;
+            margin-bottom: 15px;
+            padding: 10px;
+            background: white;
+            border-radius: 8px;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+        }
+
+        .step-icon {
+            width: 40px;
+            height: 40px;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            margin-right: 15px;
+            font-weight: bold;
+            color: white;
+        }
+
+        .step-icon.walk { background: #FF9800; }
+        .step-icon.bus { background: #2196F3; }
+        .step-icon.subway { background: #9C27B0; }
+        .step-icon.train { background: #795548; }
+
+        .step-details h3 {
+            margin-bottom: 5px;
+            color: #333;
+        }
+
+        .step-details p {
+            color: #666;
+            font-size: 14px;
+        }
+
+        .error-message {
+            background: #ffebee;
+            color: #c62828;
+            padding: 10px;
+            border-radius: 8px;
+            margin: 10px 20px;
+            display: none;
+        }
+
+        .features {
+            padding: 20px;
+            background: white;
+        }
+
+        .feature-item {
+            display: flex;
+            align-items: center;
+            margin-bottom: 15px;
+            padding: 10px;
+            background: #f8f9fa;
+            border-radius: 8px;
+        }
+
+        .feature-icon {
+            width: 40px;
+            height: 40px;
+            background: #4CAF50;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            margin-right: 15px;
+            color: white;
+            font-size: 18px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <!-- HTTPS 경고 -->
+        <div class="https-warning" id="httpsWarning">
+            ⚠️ 카메라 사용을 위해 HTTPS 환경이 필요합니다. 
+            <a href="#" onclick="showHTTPSGuide()" style="color: white; text-decoration: underline;">설정 방법 보기</a>
+        </div>
+
+        <!-- 권한 요청 오버레이 -->
+        <div class="permission-overlay" id="permissionOverlay">
+            <div class="permission-dialog">
+                <h3>📹 카메라 권한 필요</h3>
+                <p>AR 안내 기능을 위해<br>카메라 접근 권한이 필요합니다.</p>
+                <button onclick="requestCameraPermission()">권한 허용</button>
+                <button onclick="closePermissionDialog()" style="background: #666;">나중에</button>
+            </div>
+        </div>
+
+        <div class="header">
+            <select class="language-selector" id="languageSelect">
+                <option value="ko">한국어</option>
+                <option value="en">English</option>
+                <option value="es">Español</option>
+                <option value="zh">中文</option>
+                <option value="ja">日本語</option>
+            </select>
+            <h1 id="headerTitle">AR Transit Guide</h1>
+            <p id="headerSubtitle">실시간 위치 기반 대중교통 안내</p>
+            <div class="location-status" id="locationStatus">위치 확인 중...</div>
+        </div>
+
+        <div class="input-section">
+            <div class="input-group">
+                <label for="departure" id="departureLabel">출발지</label>
+                <input type="text" id="departure" placeholder="현재 위치 또는 직접 입력">
+                <button class="location-btn" onclick="getCurrentLocation('departure')" title="현재 위치">📍</button>
+            </div>
+            <div class="input-group">
+                <label for="destination" id="destinationLabel">도착지</label>
+                <input type="text" id="destination" placeholder="도착지를 입력하세요">
+                <button class="location-btn" onclick="getLocationSuggestions('destination')" title="위치 검색">🔍</button>
+            </div>
+            <button class="search-btn" id="searchBtn" onclick="searchRoute()">
+                <span id="searchBtnText">실시간 경로 검색</span>
+                <div class="loading" id="loading">
+                    <div class="spinner"></div>
+                </div>
+            </button>
+        </div>
+
+        <div class="error-message" id="errorMessage"></div>
+
+        <div class="ar-view" id="arView">
+            <video id="cameraFeed" autoplay playsinline></video>
+            <button class="camera-btn" onclick="toggleCamera()" id="cameraBtn">카메라 켜기</button>
+            <div class="ar-overlay">
+                <div class="distance-indicator" id="distanceIndicator">계산 중...</div>
+                <div class="compass">🧭</div>
+                <div class="ar-direction" id="arDirection">경로를 계산하고 있습니다...</div>
+                <div class="ar-info" id="arInfo">
+                    실시간 경로 정보를 불러오는 중...
+                </div>
+            </div>
+        </div>
+
+        <div class="route-info" id="routeInfo">
+            <h2 id="routeTitle">실시간 경로 안내</h2>
+            <div id="routeSteps">
+                <!-- 동적으로 생성됨 -->
+            </div>
+        </div>
+
+        <div class="features">
+            <h2 id="featuresTitle">실시간 기능</h2>
+            <div class="feature-item">
+                <div class="feature-icon">🗺️</div>
+                <div id="feature1">
+                    <strong>실시간 GPS 위치</strong><br>
+                    <small>정확한 현재 위치 기반 경로 안내</small>
+                </div>
+            </div>
+            <div class="feature-item">
+                <div class="feature-icon">🚇</div>
+                <div id="feature2">
+                    <strong>실시간 교통정보</strong><br>
+                    <small>지연, 운행중단 등 실시간 반영</small>
+                </div>
+            </div>
+            <div class="feature-item">
+                <div class="feature-icon">📱</div>
+                <div id="feature3">
+                    <strong>AR 실시간 안내</strong><br>
+                    <small>카메라로 실제 방향 표시</small>
+                </div>
+            </div>
+            <div class="feature-item">
+                <div class="feature-icon">🌍</div>
+                <div id="feature4">
+                    <strong>글로벌 다국어</strong><br>
+                    <small>5개 언어 실시간 번역</small>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const translations = {
+            ko: {
+                title: "AR Transit Guide",
+                subtitle: "실시간 위치 기반 대중교통 안내",
+                departure: "출발지",
+                destination: "도착지",
+                departurePlaceholder: "현재 위치 또는 직접 입력",
+                destinationPlaceholder: "도착지를 입력하세요",
+                startButton: "실시간 경로 검색",
+                routeGuide: "실시간 경로 안내",
+                locationStatus: "위치 확인 중...",
+                locationFound: "현재 위치: ",
+                locationError: "위치를 찾을 수 없습니다",
+                searching: "경로 검색 중...",
+                cameraOn: "카메라 켜기",
+                cameraOff: "카메라 끄기",
+                calculating: "계산 중...",
+                routeCalculating: "경로를 계산하고 있습니다...",
+                realTimeInfo: "실시간 경로 정보를 불러오는 중...",
+                features: "실시간 기능"
+            },
+            en: {
+                title: "AR Transit Guide",
+                subtitle: "Real-time GPS Transit Navigation",
+                departure: "From",
+                destination: "To",
+                departurePlaceholder: "Current location or enter manually",
+                destinationPlaceholder: "Enter destination",
+                startButton: "Search Real-time Route",
+                routeGuide: "Real-time Route Guide",
+                locationStatus: "Finding location...",
+                locationFound: "Current location: ",
+                locationError: "Cannot find location",
+                searching: "Searching route...",
+                cameraOn: "Turn Camera On",
+                cameraOff: "Turn Camera Off",
+                calculating: "Calculating...",
+                routeCalculating: "Calculating route...",
+                realTimeInfo: "Loading real-time route information...",
+                features: "Real-time Features"
+            },
+            es: {
+                title: "AR Transit Guide",
+                subtitle: "Navegación GPS en Tiempo Real",
+                departure: "Desde",
+                destination: "Hacia",
+                departurePlaceholder: "Ubicación actual o ingrese manualmente",
+                destinationPlaceholder: "Ingrese destino",
+                startButton: "Buscar Ruta en Tiempo Real",
+                routeGuide: "Guía de Ruta en Tiempo Real",
+                locationStatus: "Encontrando ubicación...",
+                locationFound: "Ubicación actual: ",
+                locationError: "No se puede encontrar la ubicación",
+                searching: "Buscando ruta...",
+                cameraOn: "Encender Cámara",
+                cameraOff: "Apagar Cámara",
+                calculating: "Calculando...",
+                routeCalculating: "Calculando ruta...",
+                realTimeInfo: "Cargando información de ruta en tiempo real...",
+                features: "Funciones en Tiempo Real"
+            },
+            zh: {
+                title: "AR Transit Guide",
+                subtitle: "实时GPS公交导航",
+                departure: "出发地",
+                destination: "目的地",
+                departurePlaceholder: "当前位置或手动输入",
+                destinationPlaceholder: "请输入目的地",
+                startButton: "搜索实时路线",
+                routeGuide: "实时路线指南",
+                locationStatus: "正在定位...",
+                locationFound: "当前位置: ",
+                locationError: "无法找到位置",
+                searching: "搜索路线中...",
+                cameraOn: "打开摄像头",
+                cameraOff: "关闭摄像头",
+                calculating: "计算中...",
+                routeCalculating: "正在计算路线...",
+                realTimeInfo: "正在加载实时路线信息...",
+                features: "实时功能"
+            },
+            ja: {
+                title: "AR Transit Guide",
+                subtitle: "リアルタイムGPS交通案内",
+                departure: "出発地",
+                destination: "目的地",
+                departurePlaceholder: "現在地または手動入力",
+                destinationPlaceholder: "目的地を入力してください",
+                startButton: "リアルタイム経路検索",
+                routeGuide: "リアルタイム経路案内",
+                locationStatus: "位置確認中...",
+                locationFound: "現在位置: ",
+                locationError: "位置が見つかりません",
+                searching: "経路検索中...",
+                cameraOn: "カメラを開始",
+                cameraOff: "カメラを停止",
+                calculating: "計算中...",
+                routeCalculating: "経路を計算しています...",
+                realTimeInfo: "リアルタイム経路情報を読み込み中...",
+                features: "リアルタイム機能"
+            }
+        };
+
+        let userLocation = null;
+        let cameraStream = null;
+        let isCameraOn = false;
+        let currentRoute = null;
+
+        // 위치 정보 가져오기
+        function getCurrentLocation(inputField = null) {
+            const lang = document.getElementById('languageSelect').value;
+            const t = translations[lang];
+            
+            document.getElementById('locationStatus').textContent = t.locationStatus;
+            
+            if (navigator.geolocation) {
+                navigator.geolocation.getCurrentPosition(
+                    function(position) {
+                        userLocation = {
+                            lat: position.coords.latitude,
+                            lng: position.coords.longitude
+                        };
+                        
+                        // 역지오코딩으로 주소 변환
+                        reverseGeocode(userLocation, inputField);
+                        
+                        document.getElementById('locationStatus').textContent = 
+                            t.locationFound + `${userLocation.lat.toFixed(4)}, ${userLocation.lng.toFixed(4)}`;
+                    },
+                    function(error) {
+                        console.error('위치 오류:', error);
+                        document.getElementById('locationStatus').textContent = t.locationError;
+                        showError('위치 정보를 가져올 수 없습니다. 수동으로 입력해주세요.');
+                    },
+                    {
+                        enableHighAccuracy: true,
+                        timeout: 10000,
+                        maximumAge: 60000
+                    }
+                );
+            } else {
+                showError('이 브라우저는 위치 서비스를 지원하지 않습니다.');
+            }
+        }
+
+        // 역지오코딩 (좌표 → 주소)
+        async function reverseGeocode(location, inputField = null) {
+            try {
+                // OpenStreetMap Nominatim API 사용 (무료)
+                const response = await fetch(
+                    `https://nominatim.openstreetmap.org/reverse?format=json&lat=${location.lat}&lon=${location.lng}&accept-language=ko`
+                );
+                const data = await response.json();
+                
+                if (data && data.display_name) {
+                    const address = data.display_name;
+                    if (inputField) {
+                        document.getElementById(inputField).value = address;
+                    }
+                    return address;
+                }
+            } catch (error) {
+                console.error('역지오코딩 오류:', error);
+            }
+            return null;
+        }
+
+        // 주소 검색 (지오코딩)
+        async function geocodeAddress(address) {
+            try {
+                const response = await fetch(
+                    `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(address)}&limit=1&accept-language=ko`
+                );
+                const data = await response.json();
+                
+                if (data && data.length > 0) {
+                    return {
+                        lat: parseFloat(data[0].lat),
+                        lng: parseFloat(data[0].lon),
+                        name: data[0].display_name
+                    };
+                }
+            } catch (error) {
+                console.error('지오코딩 오류:', error);
+            }
+            return null;
+        }
+
+        // 실시간 경로 검색
+        async function searchRoute() {
+            const departure = document.getElementById('departure').value.trim();
+            const destination = document.getElementById('destination').value.trim();
+            const lang = document.getElementById('languageSelect').value;
+            const t = translations[lang];
+            
+            if (!departure || !destination) {
+                showError('출발지와 도착지를 모두 입력해주세요.');
+                return;
+            }
+
+            // 로딩 상태
+            setLoading(true);
+            document.getElementById('searchBtnText').textContent = t.searching;
+            
+            try {
+                // 1. 출발지 좌표 가져오기
+                let departureCoords = userLocation;
+                if (departure !== '현재 위치' && !departure.includes('현재')) {
+                    departureCoords = await geocodeAddress(departure);
+                    if (!departureCoords) {
+                        throw new Error('출발지를 찾을 수 없습니다.');
+                    }
+                }
+                
+                // 2. 도착지 좌표 가져오기
+                const destinationCoords = await geocodeAddress(destination);
+                if (!destinationCoords) {
+                    throw new Error('도착지를 찾을 수 없습니다.');
+                }
+                
+                // 3. 경로 계산
+                const route = await calculateRoute(departureCoords, destinationCoords);
+                
+                if (route) {
+                    currentRoute = route;
+                    displayRoute(route);
+                    document.getElementById('arView').style.display = 'block';
+                    document.getElementById('routeInfo').style.display = 'block';
+                    startARNavigation(route);
+                } else {
+                    throw new Error('경로를 찾을 수 없습니다.');
+                }
+                
+            } catch (error) {
+                console.error('경로 검색 오류:', error);
+                showError(error.message);
+            } finally {
+                setLoading(false);
+                document.getElementById('searchBtnText').textContent = t.startButton;
+            }
+        }
+
+        // 경로 계산 (실제 API 연동)
+        async function calculateRoute(start, end) {
+            try {
+                // OpenRouteService API (무료, 가입 필요)
+                // 또는 MapBox Directions API
+                // 또는 Google Directions API
+                
+                // 데모용 거리 계산
+                const distance = calculateDistance(start.lat, start.lng, end.lat, end.lng);
+                const duration = Math.round(distance * 12); // 대략적인 소요시간 (분)
+                
+                // 실제 대중교통 경로 시뮬레이션
+                const route = {
+                    distance: distance,
+                    duration: duration,
+                    steps: generateTransitSteps(start, end, distance, duration)
+                };
+                
+                return route;
+                
+            } catch (error) {
+                console.error('경로 계산 오류:', error);
+                return null;
+            }
+        }
+
+        // 거리 계산 (Haversine formula)
+        function calculateDistance(lat1, lng1, lat2, lng2) {
+            const R = 6371; // 지구 반지름 (km)
+            const dLat = (lat2 - lat1) * Math.PI / 180;
+            const dLng = (lng2 - lng1) * Math.PI / 180;
+            const a = Math.sin(dLat/2) * Math.sin(dLat/2) +
+                    Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
+                    Math.sin(dLng/2) * Math.sin(dLng/2);
+            const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+            return R * c;
+        }
+
+        // 대중교통 경로 단계 생성
+        function generateTransitSteps(start, end, distance, duration) {
+            const lang = document.getElementById('languageSelect').value;
+            const steps = [];
+            
+            // 거리에 따라 다른 교통수단 조합
+            if (distance < 2) {
+                // 짧은 거리: 도보 + 버스
+                steps.push({
+                    type: 'walk',
+                    description: lang === 'ko' ? `가까운 버스정류장까지 도보 (${Math.round(distance * 200)}m)` :
+                                lang === 'en' ? `Walk to nearby bus stop (${Math.round(distance * 200)}m)` :
+                                lang === 'es' ? `Caminar hasta la parada de autobús (${Math.round(distance * 200)}m)` :
+                                `步行到附近公交站 (${Math.round(distance * 200)}米)`,
+                    duration: Math.round(distance * 3)
+                });
+                
+                steps.push({
+                    type: 'bus',
+                    description: lang === 'ko' ? `버스 ${Math.floor(Math.random() * 900) + 100}번 (${Math.round(duration * 0.7)}분)` :
+                                lang === 'en' ? `Bus ${Math.floor(Math.random() * 900) + 100} (${Math.round(duration * 0.7)} min)` :
+                                lang === 'es' ? `Autobús ${Math.floor(Math.random() * 900) + 100} (${Math.round(duration * 0.7)} min)` :
+                                `${Math.floor(Math.random() * 900) + 100}路公交 (${Math.round(duration * 0.7)}分钟)`,
+                    duration: Math.round(duration * 0.7)
+                });
+            } else if (distance < 10) {
+                // 중간 거리: 도보 + 지하철 + 도보
+                steps.push({
+                    type: 'walk',
+                    description: lang === 'ko' ? `가까운 지하철역까지 도보 (${Math.round(distance * 150)}m)` :
+                                lang === 'en' ? `Walk to subway station (${Math.round(distance * 150)}m)` :
+                                lang === 'es' ? `Caminar hasta estación de metro (${Math.round(distance * 150)}m)` :
+                                `步行到地铁站 (${Math.round(distance * 150)}米)`,
+                    duration: Math.round(distance * 2)
+                });
+                
+                const lines = ['2호선', 'Line 2', 'Línea 2', '2号线', '2号線'];
+                steps.push({
+                    type: 'subway',
+                    description: lang === 'ko' ? `지하철 ${lines[0]} (${Math.round(duration * 0.6)}분, ${Math.round(distance * 2)}정거장)` :
+                                lang === 'en' ? `Subway ${lines[1]} (${Math.round(duration * 0.6)} min, ${Math.round(distance * 2)} stops)` :
+                                lang === 'es' ? `Metro ${lines[2]} (${Math.round(duration * 0.6)} min, ${Math.round(distance * 2)} paradas)` :
+                                lang === 'zh' ? `地铁${lines[3]} (${Math.round(duration * 0.6)}分钟, ${Math.round(distance * 2)}站)` :
+                                `地下鉄${lines[4]} (${Math.round(duration * 0.6)}分, ${Math.round(distance * 2)}駅)`,
+                    duration: Math.round(duration * 0.6)
+                });
+                
+                steps.push({
+                    type: 'walk',
+                    description: lang === 'ko' ? `목적지까지 도보 (${Math.round(distance * 100)}m)` :
+                                lang === 'en' ? `Walk to destination (${Math.round(distance * 100)}m)` :
+                                lang === 'es' ? `Caminar al destino (${Math.round(distance * 100)}m)` :
+                                lang === 'zh' ? `步行到目的地 (${Math.round(distance * 100)}米)` :
+                                `目的地まで徒歩 (${Math.round(distance * 100)}m)`,
+                    duration: Math.round(distance * 1.5)
+                });
+            } else {
+                // 긴 거리: 도보 + 기차/고속버스 + 도보
+                steps.push({
+                    type: 'walk',
+                    description: lang === 'ko' ? `역까지 도보 (400m)` :
+                                lang === 'en' ? `Walk to station (400m)` :
+                                lang === 'es' ? `Caminar a la estación (400m)` :
+                                lang === 'zh' ? `步行到车站 (400米)` :
+                                `駅まで徒歩 (400m)`,
+                    duration: 5
+                });
+                
+                steps.push({
+                    type: 'train',
+                    description: lang === 'ko' ? `KTX/고속열차 (${Math.round(duration * 0.8)}분)` :
+                                lang === 'en' ? `Express train (${Math.round(duration * 0.8)} min)` :
+                                lang === 'es' ? `Tren expreso (${Math.round(duration * 0.8)} min)` :
+                                lang === 'zh' ? `高速列车 (${Math.round(duration * 0.8)}分钟)` :
+                                `高速列車 (${Math.round(duration * 0.8)}分)`,
+                    duration: Math.round(duration * 0.8)
+                });
+                
+                steps.push({
+                    type: 'walk',
+                    description: lang === 'ko' ? `목적지까지 도보 (300m)` :
+                                lang === 'en' ? `Walk to destination (300m)` :
+                                lang === 'es' ? `Caminar al destino (300m)` :
+                                lang === 'zh' ? `步行到目的地 (300米)` :
+                                `目的地まで徒歩 (300m)`,
+                    duration: 4
+                });
+            }
+            
+            return steps;
+        }
+
+        // 경로 표시
+        function displayRoute(route) {
+            const routeStepsContainer = document.getElementById('routeSteps');
+            routeStepsContainer.innerHTML = '';
+            
+            route.steps.forEach((step, index) => {
+                const stepElement = document.createElement('div');
+                stepElement.className = 'route-step';
+                
+                const iconMap = {
+                    'walk': '🚶',
+                    'bus': '🚌',
+                    'subway': '🚇',
+                    'train': '🚄'
+                };
+                
+                stepElement.innerHTML = `
+                    <div class="step-icon ${step.type}">${iconMap[step.type]}</div>
+                    <div class="step-details">
+                        <h3>${step.description.split('(')[0]}</h3>
+                        <p>${step.description}</p>
+                    </div>
+                `;
+                
+                routeStepsContainer.appendChild(stepElement);
+            });
+            
+            // 총 소요시간 업데이트
+            const lang = document.getElementById('languageSelect').value;
+            const totalTime = route.duration;
+            const timeText = lang === 'ko' ? `총 소요시간: ${totalTime}분` :
+                            lang === 'en' ? `Total time: ${totalTime} min` :
+                            lang === 'es' ? `Tiempo total: ${totalTime} min` :
+                            lang === 'zh' ? `总用时: ${totalTime}分钟` :
+                            `総所要時間: ${totalTime}分`;
+                            
+            document.getElementById('routeTitle').textContent = `${translations[lang].routeGuide} (${timeText})`;
+        }
+
+        // AR 안내 시작
+        function startARNavigation(route) {
+            const lang = document.getElementById('languageSelect').value;
+            const t = translations[lang];
+            
+            // 실시간 방향 안내
+            const directions = generateARDirections(route, lang);
+            let currentStep = 0;
+            
+            // 거리 표시 업데이트
+            updateDistanceIndicator(route);
+            
+            // AR 정보 업데이트
+            updateARInfo(route, lang);
+            
+            // 단계별 안내 시뮬레이션
+            const interval = setInterval(() => {
+                if (currentStep < directions.length) {
+                    document.getElementById('arDirection').textContent = directions[currentStep];
+                    currentStep++;
+                } else {
+                    clearInterval(interval);
+                    const arrivalMessages = {
+                        ko: "목적지에 도착했습니다!",
+                        en: "You have arrived at your destination!",
+                        es: "¡Ha llegado a su destino!",
+                        zh: "您已到达目的地！",
+                        ja: "目的地に到着しました！"
+                    };
+                    document.getElementById('arDirection').textContent = arrivalMessages[lang];
+                    document.getElementById('arDirection').style.background = "rgba(76, 175, 80, 0.9)";
+                }
+            }, 4000);
+        }
+
+        // AR 방향 안내 생성
+        function generateARDirections(route, lang) {
+            const directions = [];
+            
+            route.steps.forEach((step, index) => {
+                if (step.type === 'walk') {
+                    directions.push(
+                        lang === 'ko' ? `${index === 0 ? '출발지에서' : '역에서'} 직진 →` :
+                        lang === 'en' ? `Go straight from ${index === 0 ? 'start' : 'station'} →` :
+                        lang === 'es' ? `Siga recto desde ${index === 0 ? 'inicio' : 'estación'} →` :
+                        lang === 'zh' ? `从${index === 0 ? '起点' : '车站'}直行 →` :
+                        `${index === 0 ? 'スタート' : '駅'}から直進 →`
+                    );
+                } else if (step.type === 'bus') {
+                    directions.push(
+                        lang === 'ko' ? '버스 정류장에서 승차 🚌' :
+                        lang === 'en' ? 'Board the bus at stop 🚌' :
+                        lang === 'es' ? 'Subir al autobús en la parada 🚌' :
+                        lang === 'zh' ? '在公交站上车 🚌' :
+                        'バス停で乗車 🚌'
+                    );
+                } else if (step.type === 'subway') {
+                    directions.push(
+                        lang === 'ko' ? '지하철 입구로 이동 🚇' :
+                        lang === 'en' ? 'Enter subway station 🚇' :
+                        lang === 'es' ? 'Entrar en estación de metro 🚇' :
+                        lang === 'zh' ? '进入地铁站 🚇' :
+                        '地下鉄入口へ 🚇'
+                    );
+                } else if (step.type === 'train') {
+                    directions.push(
+                        lang === 'ko' ? '기차역으로 이동 🚄' :
+                        lang === 'en' ? 'Go to train station 🚄' :
+                        lang === 'es' ? 'Ir a la estación de tren 🚄' :
+                        lang === 'zh' ? '前往火车站 🚄' :
+                        '駅へ向かう 🚄'
+                    );
+                }
+            });
+            
+            return directions;
+        }
+
+        // 거리 표시 업데이트
+        function updateDistanceIndicator(route) {
+            const lang = document.getElementById('languageSelect').value;
+            const distance = route.distance;
+            const unit = distance > 1 ? 'km' : 'm';
+            const displayDistance = distance > 1 ? distance.toFixed(1) : Math.round(distance * 1000);
+            
+            const distanceText = lang === 'ko' ? `${displayDistance}${unit} 남음` :
+                                lang === 'en' ? `${displayDistance}${unit} left` :
+                                lang === 'es' ? `${displayDistance}${unit} restantes` :
+                                lang === 'zh' ? `剩余${displayDistance}${unit}` :
+                                `残り${displayDistance}${unit}`;
+                                
+            document.getElementById('distanceIndicator').textContent = distanceText;
+        }
+
+        // AR 정보 업데이트
+        function updateARInfo(route, lang) {
+            const t = translations[lang];
+            const nextStep = route.steps[0];
+            const totalTime = route.duration;
+            
+            let nextStepInfo = '';
+            if (nextStep.type === 'bus') {
+                nextStepInfo = lang === 'ko' ? '다음: 버스 정류장' :
+                              lang === 'en' ? 'Next: Bus stop' :
+                              lang === 'es' ? 'Siguiente: Parada de autobús' :
+                              lang === 'zh' ? '下一步: 公交站' :
+                              '次: バス停';
+            } else if (nextStep.type === 'subway') {
+                nextStepInfo = lang === 'ko' ? '다음: 지하철역' :
+                              lang === 'en' ? 'Next: Subway station' :
+                              lang === 'es' ? 'Siguiente: Estación de metro' :
+                              lang === 'zh' ? '下一步: 地铁站' :
+                              '次: 地下鉄駅';
+            } else {
+                nextStepInfo = lang === 'ko' ? '다음: 도보 이동' :
+                              lang === 'en' ? 'Next: Walking' :
+                              lang === 'es' ? 'Siguiente: Caminar' :
+                              lang === 'zh' ? '下一步: 步行' :
+                              '次: 徒歩';
+            }
+            
+            const timeText = lang === 'ko' ? `예상 시간: ${totalTime}분` :
+                            lang === 'en' ? `Est. time: ${totalTime} min` :
+                            lang === 'es' ? `Tiempo est.: ${totalTime} min` :
+                            lang === 'zh' ? `预计时间: ${totalTime}分钟` :
+                            `予想時間: ${totalTime}分`;
+            
+            document.getElementById('arInfo').innerHTML = `
+                <strong>${nextStepInfo}</strong><br>
+                <strong>${timeText}</strong><br>
+                <strong>${nextStep.description}</strong>
+            `;
+        }
+
+        // 카메라 토글 (강화된 권한 요청)
+        async function toggleCamera() {
+            const video = document.getElementById('cameraFeed');
+            const btn = document.getElementById('cameraBtn');
+            const lang = document.getElementById('languageSelect').value;
+            const t = translations[lang];
+
+            if (!isCameraOn) {
+                try {
+                    // 먼저 권한 확인
+                    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+                        throw new Error('이 브라우저는 카메라를 지원하지 않습니다.');
+                    }
+
+                    // 권한 요청 전에 사용자에게 알림
+                    if (!confirm('카메라 권한이 필요합니다. 허용하시겠습니까?')) {
+                        return;
+                    }
+
+                    console.log('카메라 권한 요청 중...');
+                    
+                    // 단계적 권한 요청
+                    let stream;
+                    try {
+                        // 1차: 후면 카메라 시도
+                        stream = await navigator.mediaDevices.getUserMedia({ 
+                            video: { 
+                                facingMode: { exact: 'environment' },
+                                width: { ideal: 1280 },
+                                height: { ideal: 720 }
+                            },
+                            audio: false
+                        });
+                    } catch (backCamError) {
+                        console.log('후면 카메라 실패, 전면 카메라 시도...');
+                        try {
+                            // 2차: 전면 카메라 시도
+                            stream = await navigator.mediaDevices.getUserMedia({ 
+                                video: { 
+                                    facingMode: 'user',
+                                    width: { ideal: 1280 },
+                                    height: { ideal: 720 }
+                                },
+                                audio: false
+                            });
+                        } catch (frontCamError) {
+                            console.log('전면 카메라 실패, 기본 카메라 시도...');
+                            // 3차: 기본 카메라 시도
+                            stream = await navigator.mediaDevices.getUserMedia({ 
+                                video: {
+                                    width: { ideal: 640 },
+                                    height: { ideal: 480 }
+                                },
+                                audio: false
+                            });
+                        }
+                    }
+
+                    if (stream) {
+                        cameraStream = stream;
+                        video.srcObject = stream;
+                        
+                        // 비디오 재생 시작
+                        video.play().then(() => {
+                            console.log('카메라 스트림 시작됨');
+                            btn.textContent = t.cameraOff;
+                            isCameraOn = true;
+                            
+                            // AR 마커들 활성화
+                            activateARMarkers();
+                            
+                            alert('카메라가 활성화되었습니다! AR 안내를 시작합니다.');
+                        }).catch(playError => {
+                            console.error('비디오 재생 오류:', playError);
+                            throw new Error('카메라 화면을 표시할 수 없습니다.');
+                        });
+                    }
+                    
+                } catch (err) {
+                    console.error('카메라 접근 오류:', err);
+                    
+                    let errorMessage = '카메라에 접근할 수 없습니다.\n\n가능한 해결방법:\n';
+                    errorMessage += '1. 브라우저에서 카메라 권한을 허용해주세요\n';
+                    errorMessage += '2. HTTPS 환경에서 접속해주세요\n';
+                    errorMessage += '3. 다른 앱에서 카메라를 사용 중이면 종료해주세요\n';
+                    errorMessage += '4. 브라우저를 새로고침해주세요';
+                    
+                    alert(errorMessage);
+                    
+                    // 권한 상태 확인
+                    checkCameraPermission();
+                }
+            } else {
+                // 카메라 끄기
+                if (cameraStream) {
+                    cameraStream.getTracks().forEach(track => {
+                        track.stop();
+                        console.log('카메라 트랙 중지:', track.kind);
+                    });
+                    video.srcObject = null;
+                    cameraStream = null;
+                }
+                btn.textContent = t.cameraOn;
+                isCameraOn = false;
+                
+                // AR 마커들 비활성화
+                deactivateARMarkers();
+                
+                console.log('카메라 비활성화됨');
+            }
+        }
+
+        // 카메라 권한 상태 확인
+        async function checkCameraPermission() {
+            try {
+                if (navigator.permissions && navigator.permissions.query) {
+                    const permission = await navigator.permissions.query({ name: 'camera' });
+                    console.log('카메라 권한 상태:', permission.state);
+                    
+                    if (permission.state === 'denied') {
+                        alert('카메라 권한이 차단되었습니다.\n브라우저 설정에서 카메라 권한을 허용해주세요.');
+                        showCameraPermissionGuide();
+                    }
+                    
+                    permission.addEventListener('change', () => {
+                        console.log('카메라 권한 상태 변경:', permission.state);
+                    });
+                }
+            } catch (error) {
+                console.error('권한 확인 오류:', error);
+            }
+        }
+
+        // 카메라 권한 가이드 표시
+        function showCameraPermissionGuide() {
+            const guide = document.createElement('div');
+            guide.style.cssText = `
+                position: fixed;
+                top: 50%;
+                left: 50%;
+                transform: translate(-50%, -50%);
+                background: white;
+                padding: 20px;
+                border-radius: 10px;
+                box-shadow: 0 10px 30px rgba(0,0,0,0.5);
+                z-index: 1000;
+                max-width: 350px;
+                text-align: center;
+            `;
+            
+            guide.innerHTML = `
+                <h3>카메라 권한 설정 방법</h3>
+                <p><strong>Chrome/Safari:</strong></p>
+                <p>1. 주소창 왼쪽 🔒 클릭</p>
+                <p>2. 카메라 → 허용 선택</p>
+                <p>3. 페이지 새로고침</p>
+                <br>
+                <button onclick="this.parentElement.remove()" 
+                        style="background:#4CAF50; color:white; border:none; padding:10px 20px; border-radius:5px; cursor:pointer;">
+                    확인
+                </button>
+            `;
+            
+            document.body.appendChild(guide);
+            
+            setTimeout(() => {
+                if (guide.parentElement) {
+                    guide.remove();
+                }
+            }, 10000);
+        }
+
+        // AR 마커 활성화
+        function activateARMarkers() {
+            const markers = document.querySelectorAll('.marker');
+            markers.forEach((marker, index) => {
+                marker.style.animation = `bounce 1.5s infinite ${index * 0.3}s`;
+                marker.style.opacity = '1';
+            });
+            
+            // 가상 AR 객체들 추가
+            addVirtualARObjects();
+        }
+
+        // AR 마커 비활성화
+        function deactivateARMarkers() {
+            const markers = document.querySelectorAll('.marker');
+            markers.forEach(marker => {
+                marker.style.animation = 'none';
+                marker.style.opacity = '0.5';
+            });
+            
+            // 가상 AR 객체들 제거
+            removeVirtualARObjects();
+        }
+
+        // 가상 AR 객체 추가
+        function addVirtualARObjects() {
+            const arOverlay = document.querySelector('.ar-overlay');
+            
+            // 방향 화살표 추가
+            const arrow = document.createElement('div');
+            arrow.id = 'arArrow';
+            arrow.style.cssText = `
+                position: absolute;
+                top: 30%;
+                left: 50%;
+                transform: translateX(-50%);
+                font-size: 60px;
+                color: #4CAF50;
+                text-shadow: 2px 2px 4px rgba(0,0,0,0.5);
+                animation: arPulse 2s infinite;
+                z-index: 10;
+            `;
+            arrow.textContent = '⬆️';
+            arOverlay.appendChild(arrow);
+            
+            // 거리 링 추가
+            const distanceRing = document.createElement('div');
+            distanceRing.id = 'distanceRing';
+            distanceRing.style.cssText = `
+                position: absolute;
+                top: 60%;
+                left: 50%;
+                transform: translate(-50%, -50%);
+                width: 150px;
+                height: 150px;
+                border: 3px solid #4CAF50;
+                border-radius: 50%;
+                border-top: 3px solid transparent;
+                animation: ringRotate 3s linear infinite;
+                opacity: 0.7;
+            `;
+            arOverlay.appendChild(distanceRing);
+            
+            // 목적지 표시 추가
+            const destination = document.createElement('div');
+            destination.id = 'arDestination';
+            destination.style.cssText = `
+                position: absolute;
+                top: 20%;
+                right: 20px;
+                background: rgba(255,255,255,0.9);
+                padding: 10px;
+                border-radius: 10px;
+                font-size: 12px;
+                font-weight: bold;
+                color: #333;
+                max-width: 120px;
+            `;
+            destination.textContent = '🎯 목적지 방향';
+            arOverlay.appendChild(destination);
+        }
+
+        // 가상 AR 객체 제거
+        function removeVirtualARObjects() {
+            const elementsToRemove = ['arArrow', 'distanceRing', 'arDestination'];
+            elementsToRemove.forEach(id => {
+                const element = document.getElementById(id);
+                if (element) {
+                    element.remove();
+                }
+            });
+        }
+
+        // AR 애니메이션 추가
+        const arAnimations = `
+            @keyframes arPulse {
+                0%, 100% { transform: translateX(-50%) scale(1); }
+                50% { transform: translateX(-50%) scale(1.2); }
+            }
+            
+            @keyframes ringRotate {
+                0% { transform: translate(-50%, -50%) rotate(0deg); }
+                100% { transform: translate(-50%, -50%) rotate(360deg); }
+            }
+        `;
+        
+        // 스타일 시트에 애니메이션 추가
+        const styleSheet = document.createElement('style');
+        styleSheet.textContent = arAnimations;
+        document.head.appendChild(styleSheet);
+
+        // 위치 제안 (자동완성)
+        async function getLocationSuggestions(inputField) {
+            const input = document.getElementById(inputField);
+            const query = input.value.trim();
+            
+            if (query.length < 2) return;
+            
+            try {
+                const response = await fetch(
+                    `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(query)}&limit=5&accept-language=ko`
+                );
+                const suggestions = await response.json();
+                
+                // 간단한 드롭다운 구현 (실제로는 더 정교한 UI 필요)
+                if (suggestions.length > 0) {
+                    const firstSuggestion = suggestions[0].display_name;
+                    if (confirm(`"${firstSuggestion}"을(를) 선택하시겠습니까?`)) {
+                        input.value = firstSuggestion;
+                    }
+                }
+            } catch (error) {
+                console.error('위치 제안 오류:', error);
+            }
+        }
+
+        // 언어 변경
+        function changeLanguage() {
+            const lang = document.getElementById('languageSelect').value;
+            const t = translations[lang];
+            
+            // UI 텍스트 업데이트
+            document.getElementById('headerTitle').textContent = t.title;
+            document.getElementById('headerSubtitle').textContent = t.subtitle;
+            document.getElementById('departureLabel').textContent = t.departure;
+            document.getElementById('destinationLabel').textContent = t.destination;
+            document.getElementById('departure').placeholder = t.departurePlaceholder;
+            document.getElementById('destination').placeholder = t.destinationPlaceholder;
+            document.getElementById('searchBtnText').textContent = t.startButton;
+            document.getElementById('featuresTitle').textContent = t.features;
+            
+            // 카메라 버튼
+            const cameraBtn = document.getElementById('cameraBtn');
+            if (cameraBtn) {
+                cameraBtn.textContent = isCameraOn ? t.cameraOff : t.cameraOn;
+            }
+            
+            // 기능 설명 업데이트
+            const features = [
+                { title: "실시간 GPS 위치", desc: "정확한 현재 위치 기반 경로 안내" },
+                { title: "실시간 교통정보", desc: "지연, 운행중단 등 실시간 반영" },
+                { title: "AR 실시간 안내", desc: "카메라로 실제 방향 표시" },
+                { title: "글로벌 다국어", desc: "5개 언어 실시간 번역" }
+            ];
+            
+            // 언어별 기능 설명 (간단히 유지)
+            document.getElementById('feature1').innerHTML = `<strong>${features[0].title}</strong><br><small>${features[0].desc}</small>`;
+            document.getElementById('feature2').innerHTML = `<strong>${features[1].title}</strong><br><small>${features[1].desc}</small>`;
+            document.getElementById('feature3').innerHTML = `<strong>${features[2].title}</strong><br><small>${features[2].desc}</small>`;
+            document.getElementById('feature4').innerHTML = `<strong>${features[3].title}</strong><br><small>${features[3].desc}</small>`;
+        }
+
+        // 로딩 상태 관리
+        function setLoading(isLoading) {
+            const btn = document.getElementById('searchBtn');
+            const loading = document.getElementById('loading');
+            const text = document.getElementById('searchBtnText');
+            
+            if (isLoading) {
+                btn.disabled = true;
+                loading.style.display = 'block';
+                text.style.opacity = '0';
+            } else {
+                btn.disabled = false;
+                loading.style.display = 'none';
+                text.style.opacity = '1';
+            }
+        }
+
+        // 에러 메시지 표시
+        function showError(message) {
+            const errorDiv = document.getElementById('errorMessage');
+            errorDiv.textContent = message;
+            errorDiv.style.display = 'block';
+            
+            setTimeout(() => {
+                errorDiv.style.display = 'none';
+            }, 5000);
+        }
+
+        // 이벤트 리스너
+        document.getElementById('languageSelect').addEventListener('change', changeLanguage);
+
+        // 페이지 로드 시 초기화
+        document.addEventListener('DOMContentLoaded', function() {
+            changeLanguage();
+            getCurrentLocation(); // 자동으로 현재 위치 감지
+            checkHTTPS(); // HTTPS 환경 체크
+            checkCameraSupport(); // 카메라 지원 체크
+        });
+
+        // HTTPS 환경 체크
+        function checkHTTPS() {
+            if (location.protocol !== 'https:' && location.hostname !== 'localhost' && location.hostname !== '127.0.0.1') {
+                document.getElementById('httpsWarning').style.display = 'block';
+                console.warn('HTTPS 환경이 아닙니다. 카메라 접근이 제한될 수 있습니다.');
+            }
+        }
+
+        // 카메라 지원 체크
+        function checkCameraSupport() {
+            if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+                showError('이 브라우저는 카메라를 지원하지 않습니다.');
+                document.getElementById('cameraBtn').disabled = true;
+                document.getElementById('cameraBtn').textContent = '카메라 지원 안됨';
+            }
+        }
+
+        // HTTPS 가이드 표시
+        function showHTTPSGuide() {
+            const guide = `
+HTTPS 환경 설정 방법:
+
+1. GitHub Pages 사용:
+   - GitHub에 코드 업로드
+   - Settings → Pages 활성화
+   - https://[username].github.io/[repo] 접속
+
+2. Netlify 사용:
+   - netlify.com에서 파일 드래그 앤 드롭
+   - 자동으로 HTTPS URL 생성
+
+3. ngrok 사용:
+   - ngrok.com 다운로드
+   - 'ngrok http 5500' 실행
+   - 생성된 https URL 사용
+
+4. 로컬에서 HTTPS:
+   - VS Code Live Server 설정에서 HTTPS 활성화
+            `;
+            alert(guide);
+        }
+
+        // 권한 요청 다이얼로그
+        function requestCameraPermission() {
+            document.getElementById('permissionOverlay').style.display = 'none';
+            toggleCamera();
+        }
+
+        function closePermissionDialog() {
+            document.getElementById('permissionOverlay').style.display = 'none';
+        }
+
+        // 카메라 상태 업데이트
+        function updateCameraStatus(status) {
+            const statusElement = document.getElementById('cameraStatus');
+            const lang = document.getElementById('languageSelect').value;
+            
+            const statusTexts = {
+                ko: {
+                    off: '카메라 꺼짐',
+                    requesting: '권한 요청 중...',
+                    active: '🔴 카메라 활성',
+                    error: '카메라 오류'
+                },
+                en: {
+                    off: 'Camera Off',
+                    requesting: 'Requesting...',
+                    active: '🔴 Camera Active',
+                    error: 'Camera Error'
+                },
+                es: {
+                    off: 'Cámara Apagada',
+                    requesting: 'Solicitando...',
+                    active: '🔴 Cámara Activa',
+                    error: 'Error de Cámara'
+                }
+            };
+            
+            const text = statusTexts[lang] ? statusTexts[lang][status] : statusTexts.ko[status];
+            statusElement.textContent = text;
+            
+            if (status === 'active') {
+                statusElement.classList.add('camera-active');
+            } else {
+                statusElement.classList.remove('camera-active');
+            }
+        }
+
+        // 실시간 위치 추적 (옵션)
+        function startLocationTracking() {
+            if (navigator.geolocation) {
+                navigator.geolocation.watchPosition(
+                    function(position) {
+                        userLocation = {
+                            lat: position.coords.latitude,
+                            lng: position.coords.longitude
+                        };
+                        
+                        // 경로 진행 상황 업데이트
+                        if (currentRoute) {
+                            updateRouteProgress();
+                        }
+                    },
+                    function(error) {
+                        console.error('위치 추적 오류:', error);
+                    },
+                    {
+                        enableHighAccuracy: true,
+                        timeout: 5000,
+                        maximumAge: 10000
+                    }
+                );
+            }
+        }
+
+        // 경로 진행 상황 업데이트
+        function updateRouteProgress() {
+            // 실제 위치와 경로를 비교하여 진행 상황 업데이트
+            // 이 부분은 더 복잡한 알고리즘이 필요함
+            console.log('경로 진행 상황 업데이트');
+        }
+    </script>
+</body>
+</html>
